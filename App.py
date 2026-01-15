@@ -223,7 +223,7 @@ def generate_map(gpkg_path=None, center_override=None):
 
 # --- HOOFD LAYOUT ---
 
-logo_path = "kepa_logo.png"
+logo_path = "Kepa_logo.png"
 if os.path.exists(logo_path):
     st.sidebar.image(logo_path, width=220)
 else:
@@ -371,4 +371,5 @@ center_to_show = st.session_state.get('map_center')
 
 with st.container(border=True):
     map_obj = generate_map(gpkg_path=gpkg_to_show, center_override=center_to_show)
+
     st_folium(map_obj, height=750, use_container_width=True)
