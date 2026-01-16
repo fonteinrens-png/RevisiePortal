@@ -231,7 +231,7 @@ if uploaded_file:
         st.session_state['last_uploaded'] = uploaded_file.name
         os.remove(tmp_path)
 
-    if st.sidebar.button("🚀 Start Verwerking", type="primary", use_container_width=True, disabled=not form_compleet):
+    if st.sidebar.button(" Start Verwerking", type="primary", use_container_width=True, disabled=not form_compleet):
         work_dir = "temp_workspace"
         if os.path.exists(work_dir): shutil.rmtree(work_dir)
         os.makedirs(work_dir)
@@ -298,7 +298,7 @@ if st.session_state.get('gpkg_path') and os.path.exists(st.session_state['gpkg_p
     if st.session_state.get('dxf_path') and os.path.exists(st.session_state['dxf_path']):
         with open(st.session_state['dxf_path'], "rb") as f:
             st.sidebar.download_button(
-                label="📄 Hatch Tekening (.dxf)",
+                label=" Hatch Tekening (.dxf)",
                 data=f,
                 file_name=os.path.basename(st.session_state['dxf_path']),
                 mime="application/dxf",
@@ -323,5 +323,6 @@ center_to_show = st.session_state.get('map_center')
 with st.container(border=True):
     map_obj = generate_map(gpkg_path=gpkg_to_show, center_override=center_to_show)
     st_folium(map_obj, height=750, use_container_width=True)
+
 
 
