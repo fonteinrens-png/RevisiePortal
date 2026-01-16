@@ -182,7 +182,7 @@ else:
     st.sidebar.title("KEPA")
 
 st.sidebar.markdown("---")
-st.sidebar.header("🛠️ Project Input")
+st.sidebar.header(" Project Input")
 
 st.markdown('<h1 class="main-title">Revisie Portal</h1>', unsafe_allow_html=True)
 st.markdown('<p class="subtitle">Zet meetdata om naar OTL-GIS en CAD tekening.</p>', unsafe_allow_html=True)
@@ -197,7 +197,7 @@ in_beheerder_detail = ""
 in_opleverdatum = date.today()
 
 if uploaded_file:
-    st.sidebar.subheader("📋 Projectgegevens")
+    st.sidebar.subheader(" Projectgegevens")
     beheerders = [""] + ["Gemeente", "Provincie", "Rijkswaterstaat", "Waterschap", "Prorail", "Particulier", "Onbekend", "Overig"]
     beheerders_detail = [""] + ["Amsterdamse Bos", "Havenschap", "Stadsdeel Centrum", "Stadsdeel Nieuw-West", "Stadsdeel Noord", "Stadsdeel Oost", "Stadsdeel West", "Stadsdeel Zuid", "Stadsdeel Zuidoost", "Westpoort", "Weesp", "VVE", "Overig"]
     
@@ -283,11 +283,11 @@ if uploaded_file:
 
 if st.session_state.get('gpkg_path') and os.path.exists(st.session_state['gpkg_path']):
     st.sidebar.markdown("---")
-    st.sidebar.header("📥 Resultaten")
+    st.sidebar.header(" Resultaten")
     
     with open(st.session_state['gpkg_path'], "rb") as f:
         st.sidebar.download_button(
-            label="🌍 OTL-GIS (.gpkg)",
+            label=" OTL-GIS (.gpkg)",
             data=f,
             file_name=os.path.basename(st.session_state['gpkg_path']),
             mime="application/octet-stream",
@@ -309,7 +309,7 @@ if st.session_state.get('gpkg_path') and os.path.exists(st.session_state['gpkg_p
     if st.session_state.get('excel_path') and os.path.exists(st.session_state['excel_path']):
         with open(st.session_state['excel_path'], "rb") as f:
             st.sidebar.download_button(
-                label="📊 Hoeveelheden (.xlsx)",
+                label=" Hoeveelheden (.xlsx)",
                 data=f,
                 file_name=os.path.basename(st.session_state['excel_path']),
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -323,4 +323,5 @@ center_to_show = st.session_state.get('map_center')
 with st.container(border=True):
     map_obj = generate_map(gpkg_path=gpkg_to_show, center_override=center_to_show)
     st_folium(map_obj, height=750, use_container_width=True)
+
 
