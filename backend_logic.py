@@ -23,7 +23,7 @@ except ImportError:
     gpd = None
 
 # ==============================================================================
-# CONFIGURATIE 1: OTL LAAG MAPPING
+# CONFIGURATIE
 # ==============================================================================
 OTL_LAYER_MAPPING = {
     "BSS": "Betonsteen",
@@ -45,7 +45,6 @@ OTL_LAYER_MAPPING = {
 }
 DEFAULT_LAYER = "Open grond"
 
-# 2. VOOR PUNTEN (SRI)
 POINT_LAYER_MAPPING = {
     "TROTTOIR": "Trottoirkolk",
     "POMPPUT": "Opvangput",
@@ -54,9 +53,6 @@ POINT_LAYER_MAPPING = {
     "INFILTRATIE": "Infiltratiekolk"
 }
 
-# ==============================================================================
-# CONFIGURATIE 2: KOLOM MAPPING
-# ==============================================================================
 SYSTEM_MAPPING = {
     "identificatie": "Identificatie",       
     "imgeo_id": "IMGeo_identificatie",      
@@ -271,7 +267,14 @@ def read_lines_and_blocks(doc):
                 if tag and text: attributes[tag] = text
         except Exception as e: pass
         blocks_data.append(
-            {"name": block_name, "location": shapely_location, "color": block_color, "insert": insert, "attributes": attributes}
+            {
+                "name": block_name, 
+                "location": shapely_location, 
+                "color": block_color, 
+                "layer": insert.dxf.layer, # Toegevoegd voor filtering later!
+                "insert": insert, 
+                "attributes": attributes
+            }
         )
     return lines_with_props, blocks_data
 
@@ -489,14 +492,14 @@ def export_quantities_to_excel(output_dxf_path, project_config, svh_polygons, li
 
         data_rows = []
 
-        # 1. Header Info (lijkt op het voorbeeld)
+        # 1. Header Info
         data_rows.append({"Categorie": "PROJECT INFORMATIE", "Omschrijving": "", "Hoeveelheid": "", "Eenheid": ""})
         data_rows.append({"Categorie": "", "Omschrijving": "Project", "Hoeveelheid": project_name, "Eenheid": ""})
         data_rows.append({"Categorie": "", "Omschrijving": "Beheerder", "Hoeveelheid": project_config.get("beheerder", ""), "Eenheid": ""})
         data_rows.append({"Categorie": "", "Omschrijving": "Datum", "Hoeveelheid": datetime.now().strftime("%d-%m-%Y"), "Eenheid": ""})
-        data_rows.append({"Categorie": "", "Omschrijving": "", "Hoeveelheid": "", "Eenheid": ""}) # Witregel
+        data_rows.append({"Categorie": "", "Omschrijving": "", "Hoeveelheid": "", "Eenheid": ""}) 
 
-        # 2. VLAKKEN (Oppervlaktes per materiaal)
+        # 2. VLAKKEN (Oppervlaktes)
         data_rows.append({"Categorie": "VERHARDING (VLAKKEN)", "Omschrijving": "", "Hoeveelheid": "", "Eenheid": ""})
         
         area_stats = {}
@@ -512,34 +515,22 @@ def export_quantities_to_excel(output_dxf_path, project_config, svh_polygons, li
                 "Eenheid": "m2"
             })
 
-        data_rows.append({"Categorie": "", "Omschrijving": "", "Hoeveelheid": "", "Eenheid": ""}) # Witregel
+        data_rows.append({"Categorie": "", "Omschrijving": "", "Hoeveelheid": "", "Eenheid": ""}) 
 
-        # 3. LIJNEN (Lengtes per laag - voor banden e.d.)
-        data_rows.append({"Categorie": "LIJNOBJECTEN (CAD LAGEN)", "Omschrijving": "", "Hoeveelheid": "", "Eenheid": ""})
-        
-        line_stats = {}
-        for line_item in lines_with_props:
-            layer = line_item["entity"].dxf.layer
-            length = line_item["geometry"].length
-            line_stats[layer] = line_stats.get(layer, 0.0) + length
-            
-        for layer, length in line_stats.items():
-            # Filter eventueel oninteressante lagen eruit als je wilt
-            data_rows.append({
-                "Categorie": "Lijnobjecten",
-                "Omschrijving": layer,
-                "Hoeveelheid": round(length, 2),
-                "Eenheid": "m"
-            })
-
-        data_rows.append({"Categorie": "", "Omschrijving": "", "Hoeveelheid": "", "Eenheid": ""}) # Witregel
-
-        # 4. PUNTEN (Aantallen blocks)
+        # 3. PUNTEN (Gefilterd!)
         data_rows.append({"Categorie": "INRICHTING (PUNTEN)", "Omschrijving": "", "Hoeveelheid": "", "Eenheid": ""})
         
         block_stats = {}
         for block in blocks_data:
             name = block["name"]
+            layer = block.get("layer", "").upper()
+            
+            # --- FILTER ---
+            # Sla over als naam begint met SVH (hatch)
+            if name.startswith("SVH"): continue
+            # Sla over als laag begint met X (bestaand/vervallen)
+            if layer.startswith("X"): continue
+            
             block_stats[name] = block_stats.get(name, 0) + 1
             
         for name, count in block_stats.items():
@@ -550,11 +541,7 @@ def export_quantities_to_excel(output_dxf_path, project_config, svh_polygons, li
                 "Eenheid": "st"
             })
 
-        # Maak DataFrame
         df = pd.DataFrame(data_rows)
-        
-        # Schrijf naar Excel (met simpele opmaak via Pandas)
-        # We gebruiken xlsxwriter engine voor betere compatibiliteit als die beschikbaar is
         df.to_excel(excel_path, index=False, engine='xlsxwriter')
         
         print(f"Excel aangemaakt: {excel_path}")
@@ -565,7 +552,7 @@ def export_quantities_to_excel(output_dxf_path, project_config, svh_polygons, li
         return None
 
 # ==============================================================================
-# DXF EXPORT (Ongewijzigd)
+# DXF EXPORT
 # ==============================================================================
 def export_dxf(doc, svh_polygons, non_svh_polygons, output_path, color_palette=None):
     if not svh_polygons and not non_svh_polygons:
@@ -646,7 +633,6 @@ def process_dxf(input_path, output_path=None, tolerance=0.5, template_path="OTL-
     if output_path is None: output_path = input_path.with_name(input_path.stem + "_verwerkt.dxf")
     if not input_path.exists(): raise FileNotFoundError(f"Input niet gevonden: {input_path}")
     
-    # Default waarden
     oplever_str = datetime.now().strftime("%Y-%m-%d")
     begin_garantie_str = oplever_str
     einde_garantie_str = oplever_str
@@ -665,7 +651,6 @@ def process_dxf(input_path, output_path=None, tolerance=0.5, template_path="OTL-
             einde_garantie_str = dt_einde.strftime("%Y-%m-%d")
             jaar_aanleg_val = str(dt_oplever.year)
 
-    # Config object
     project_config = {
         "bronhouder": "Gemeente Amsterdam",
         "beheerder": beheerder_val,
@@ -688,14 +673,12 @@ def process_dxf(input_path, output_path=None, tolerance=0.5, template_path="OTL-
     svh_polygons, non_svh_polygons = classify_polygons(polygons_cut, blocks_data)
     
     if gpd:
-        # GIS STAPPEN
         gpkg_path = prepare_full_gpkg_copy(output_path, template_path)
         if gpkg_path:
             export_svh_to_gis(svh_polygons, gpkg_path, project_config)
             export_sri_to_gis(sri_blocks, gpkg_path, project_config)
             clean_up_gpkg(gpkg_path)
             
-        # EXCEL STAP (NIEUW)
         export_quantities_to_excel(output_path, project_config, svh_polygons, lines_with_props, blocks_data)
             
     export_path = export_dxf(doc, svh_polygons, non_svh_polygons, output_path)
