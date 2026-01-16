@@ -13,7 +13,7 @@ import numpy as np
 from shapely.geometry import Polygon, LineString, Point as ShapelyPoint
 from shapely.ops import unary_union, polygonize
 
-# GIS libraries
+# GIS & Data libraries
 try:
     import geopandas as gpd
     import fiona
@@ -57,19 +57,15 @@ POINT_LAYER_MAPPING = {
 # ==============================================================================
 # CONFIGURATIE 2: KOLOM MAPPING
 # ==============================================================================
-# Hier koppelen we onze interne variabelen aan de ECHTE kolomnamen in de GPKG
 SYSTEM_MAPPING = {
     "identificatie": "Identificatie",       
     "imgeo_id": "IMGeo_identificatie",      
     "jaar_aanleg": "Jaar van aanleg",
-    
-    # De nieuwe velden:
     "opleverdatum": "Opleverdatum",  
     "begin_garantie": "Begin garantieperiode",
     "einde_garantie": "Einde garantieperiode",
     "beheerder": "Beheerder",
     "beheerder_detail": "Beheerder gedetailleerd",
-    
     "bronhouder": "Bronhouder",              
     "materiaal": "Materiaal",
     "kleur": "Kleur",
@@ -98,7 +94,7 @@ VALUE_MAPPING = {
 }
 
 # ==============================================================================
-# GEOMETRIE & CAD LOGICA (Ongewijzigd)
+# GEOMETRIE & CAD LOGICA
 # ==============================================================================
 ARC_MAX_DEG = 5.0
 
@@ -315,7 +311,6 @@ def prepare_full_gpkg_copy(input_dxf_path, template_path):
     if not os.path.exists(template_path):
         print(f"FOUT: Template niet gevonden: {template_path}")
         return None
-        
     input_path = Path(input_dxf_path)
     stem = input_path.stem 
     project_name = stem.split('_')[0]
@@ -328,13 +323,11 @@ def prepare_full_gpkg_copy(input_dxf_path, template_path):
         except Exception as e:
             print(f"Kon oud bestand niet verwijderen: {e}")
             return None
-
     try:
         shutil.copy(template_path, gpkg_path)
     except Exception as e:
         print(f"FOUT bij kopiëren template: {e}")
         return None
-        
     return str(gpkg_path)
 
 def clean_up_gpkg(gpkg_path):
@@ -351,7 +344,6 @@ def clean_up_gpkg(gpkg_path):
     except Exception as e:
         print(f"Fout bij scannen lagen: {e}")
         return
-
     if layers_to_remove:
         print(f"--- Opschonen: {len(layers_to_remove)} lege lagen verwijderen ---")
         for layer in layers_to_remove:
@@ -411,20 +403,17 @@ def export_svh_to_gis(svh_polygons, gpkg_path, project_config):
                 target_layer = layer_name
                 break
         
-        # Basis record met de nieuwe velden
         internal_record = {
             "geometry": poly,
-            "identificatie": str(uuid.uuid4()),    
+            "identificatie": str(uuid.uuid4()), 
+            "imgeo_id": str(uuid.uuid4()),      
             "jaar_aanleg": project_config.get("jaar_aanleg"),
-            
-            # DE NIEUWE VELDEN (komen uit project_config)
             "opleverdatum": project_config.get("opleverdatum"),
             "begin_garantie": project_config.get("begin_garantie"),
             "einde_garantie": project_config.get("einde_garantie"),
             "beheerder": project_config.get("beheerder"),
             "beheerder_detail": project_config.get("beheerder_detail"),
             "bronhouder": project_config.get("bronhouder"),
-            
             "materiaal": item["material"] 
         }
         mapped_attrs = get_mapped_attributes(attrs)
@@ -463,8 +452,6 @@ def export_sri_to_gis(sri_blocks, gpkg_path, project_config):
             "geometry": point,
             "identificatie": str(uuid.uuid4()),
             "jaar_aanleg": project_config.get("jaar_aanleg"),
-            
-            # DE NIEUWE VELDEN (komen uit project_config)
             "opleverdatum": project_config.get("opleverdatum"),
             "begin_garantie": project_config.get("begin_garantie"),
             "einde_garantie": project_config.get("einde_garantie"),
@@ -487,6 +474,95 @@ def export_sri_to_gis(sri_blocks, gpkg_path, project_config):
     print("--- Start export PUNTEN ---")
     for layer_name, records in layers_data.items():
         write_to_layer(gpkg_path, layer_name, records)
+
+# ==============================================================================
+# HOEVEELHEDEN EXPORT (EXCEL)
+# ==============================================================================
+def export_quantities_to_excel(output_dxf_path, project_config, svh_polygons, lines_with_props, blocks_data):
+    """Generates an Excel file with quantities based on processed data."""
+    try:
+        input_path = Path(output_dxf_path)
+        stem = input_path.stem.replace("_verwerkt", "") 
+        project_name = stem.split('_')[0]
+        excel_filename = f"{project_name}_Hoeveelheden.xlsx"
+        excel_path = input_path.parent / excel_filename
+
+        data_rows = []
+
+        # 1. Header Info (lijkt op het voorbeeld)
+        data_rows.append({"Categorie": "PROJECT INFORMATIE", "Omschrijving": "", "Hoeveelheid": "", "Eenheid": ""})
+        data_rows.append({"Categorie": "", "Omschrijving": "Project", "Hoeveelheid": project_name, "Eenheid": ""})
+        data_rows.append({"Categorie": "", "Omschrijving": "Beheerder", "Hoeveelheid": project_config.get("beheerder", ""), "Eenheid": ""})
+        data_rows.append({"Categorie": "", "Omschrijving": "Datum", "Hoeveelheid": datetime.now().strftime("%d-%m-%Y"), "Eenheid": ""})
+        data_rows.append({"Categorie": "", "Omschrijving": "", "Hoeveelheid": "", "Eenheid": ""}) # Witregel
+
+        # 2. VLAKKEN (Oppervlaktes per materiaal)
+        data_rows.append({"Categorie": "VERHARDING (VLAKKEN)", "Omschrijving": "", "Hoeveelheid": "", "Eenheid": ""})
+        
+        area_stats = {}
+        for poly_data in svh_polygons:
+            mat = poly_data["material"]
+            area_stats[mat] = area_stats.get(mat, 0.0) + poly_data["area"]
+        
+        for mat, area in area_stats.items():
+            data_rows.append({
+                "Categorie": "Verharding",
+                "Omschrijving": mat,
+                "Hoeveelheid": round(area, 2),
+                "Eenheid": "m2"
+            })
+
+        data_rows.append({"Categorie": "", "Omschrijving": "", "Hoeveelheid": "", "Eenheid": ""}) # Witregel
+
+        # 3. LIJNEN (Lengtes per laag - voor banden e.d.)
+        data_rows.append({"Categorie": "LIJNOBJECTEN (CAD LAGEN)", "Omschrijving": "", "Hoeveelheid": "", "Eenheid": ""})
+        
+        line_stats = {}
+        for line_item in lines_with_props:
+            layer = line_item["entity"].dxf.layer
+            length = line_item["geometry"].length
+            line_stats[layer] = line_stats.get(layer, 0.0) + length
+            
+        for layer, length in line_stats.items():
+            # Filter eventueel oninteressante lagen eruit als je wilt
+            data_rows.append({
+                "Categorie": "Lijnobjecten",
+                "Omschrijving": layer,
+                "Hoeveelheid": round(length, 2),
+                "Eenheid": "m"
+            })
+
+        data_rows.append({"Categorie": "", "Omschrijving": "", "Hoeveelheid": "", "Eenheid": ""}) # Witregel
+
+        # 4. PUNTEN (Aantallen blocks)
+        data_rows.append({"Categorie": "INRICHTING (PUNTEN)", "Omschrijving": "", "Hoeveelheid": "", "Eenheid": ""})
+        
+        block_stats = {}
+        for block in blocks_data:
+            name = block["name"]
+            block_stats[name] = block_stats.get(name, 0) + 1
+            
+        for name, count in block_stats.items():
+            data_rows.append({
+                "Categorie": "Inrichting",
+                "Omschrijving": name,
+                "Hoeveelheid": count,
+                "Eenheid": "st"
+            })
+
+        # Maak DataFrame
+        df = pd.DataFrame(data_rows)
+        
+        # Schrijf naar Excel (met simpele opmaak via Pandas)
+        # We gebruiken xlsxwriter engine voor betere compatibiliteit als die beschikbaar is
+        df.to_excel(excel_path, index=False, engine='xlsxwriter')
+        
+        print(f"Excel aangemaakt: {excel_path}")
+        return str(excel_path)
+
+    except Exception as e:
+        print(f"Fout bij maken Excel: {e}")
+        return None
 
 # ==============================================================================
 # DXF EXPORT (Ongewijzigd)
@@ -566,45 +642,39 @@ def export_dxf(doc, svh_polygons, non_svh_polygons, output_path, color_palette=N
 # MAIN
 # ==============================================================================
 def process_dxf(input_path, output_path=None, tolerance=0.5, template_path="OTL-Verhardingen_Beheer_2.4.1.gpkg", user_metadata=None):
-    """
-    Args:
-        user_metadata (dict): Dictionary met door gebruiker ingevulde velden:
-                              {
-                                'beheerder': '...',
-                                'beheerder_detail': '...',
-                                'opleverdatum': datetime.date object
-                              }
-    """
     input_path = Path(input_path)
     if output_path is None: output_path = input_path.with_name(input_path.stem + "_verwerkt.dxf")
     if not input_path.exists(): raise FileNotFoundError(f"Input niet gevonden: {input_path}")
     
-    # 1. Datum logica (Garantie berekenen)
     # Default waarden
     oplever_str = datetime.now().strftime("%Y-%m-%d")
     begin_garantie_str = oplever_str
     einde_garantie_str = oplever_str
-    
     beheerder_val = "Gemeente Amsterdam"
     beheerder_detail_val = "Onbekend"
     jaar_aanleg_val = str(datetime.now().year)
 
     if user_metadata:
-        # Beheerder
-        if user_metadata.get('beheerder'):
-            beheerder_val = user_metadata['beheerder']
-        if user_metadata.get('beheerder_detail'):
-            beheerder_detail_val = user_metadata['beheerder_detail']
-            
-        # Datum berekeningen (Pandas is handig voor DateOffset)
+        if user_metadata.get('beheerder'): beheerder_val = user_metadata['beheerder']
+        if user_metadata.get('beheerder_detail'): beheerder_detail_val = user_metadata['beheerder_detail']
         if user_metadata.get('opleverdatum'):
             dt_oplever = pd.to_datetime(user_metadata['opleverdatum'])
             dt_einde = dt_oplever + pd.DateOffset(months=6)
-            
             oplever_str = dt_oplever.strftime("%Y-%m-%d")
             begin_garantie_str = oplever_str
             einde_garantie_str = dt_einde.strftime("%Y-%m-%d")
             jaar_aanleg_val = str(dt_oplever.year)
+
+    # Config object
+    project_config = {
+        "bronhouder": "Gemeente Amsterdam",
+        "beheerder": beheerder_val,
+        "beheerder_detail": beheerder_detail_val,
+        "jaar_aanleg": jaar_aanleg_val,
+        "opleverdatum": oplever_str,
+        "begin_garantie": begin_garantie_str,
+        "einde_garantie": einde_garantie_str
+    }
 
     print(f"Lezen DXF: {input_path}")
     doc = ezdxf.readfile(str(input_path))
@@ -618,23 +688,15 @@ def process_dxf(input_path, output_path=None, tolerance=0.5, template_path="OTL-
     svh_polygons, non_svh_polygons = classify_polygons(polygons_cut, blocks_data)
     
     if gpd:
+        # GIS STAPPEN
         gpkg_path = prepare_full_gpkg_copy(output_path, template_path)
-        
         if gpkg_path:
-            # Hier stoppen we de berekende waarden in de config
-            project_config = {
-                "bronhouder": "Gemeente Amsterdam", # Vaak standaard
-                "beheerder": beheerder_val,
-                "beheerder_detail": beheerder_detail_val,
-                "jaar_aanleg": jaar_aanleg_val,
-                "opleverdatum": oplever_str,
-                "begin_garantie": begin_garantie_str,
-                "einde_garantie": einde_garantie_str
-            }
-            
             export_svh_to_gis(svh_polygons, gpkg_path, project_config)
             export_sri_to_gis(sri_blocks, gpkg_path, project_config)
             clean_up_gpkg(gpkg_path)
+            
+        # EXCEL STAP (NIEUW)
+        export_quantities_to_excel(output_path, project_config, svh_polygons, lines_with_props, blocks_data)
             
     export_path = export_dxf(doc, svh_polygons, non_svh_polygons, output_path)
     print(f"\nKlaar. CAD output: {export_path}")
