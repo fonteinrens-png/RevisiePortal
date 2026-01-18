@@ -8,10 +8,11 @@ from streamlit_folium import st_folium
 import fiona
 import ezdxf
 from pyproj import Transformer
+# Zorg dat backend_logic.py ook in je map staat
 from backend_logic import process_dxf 
 from PIL import Image
 from datetime import date
-import base64
+import base64  # <--- TOEGEVOEGD: Nodig voor het logo in de sidebar
 
 # --- 1. CONFIGURATIE (MOET ALS EERSTE) ---
 st.set_page_config(
@@ -174,6 +175,15 @@ def generate_map(gpkg_path=None, center_override=None):
             st.error(f"Fout bij laden kaartdata: {e}")
     return m
 
+def get_image_base64(path):
+    """Zet afbeelding om naar base64 string voor HTML embedding in sidebar"""
+    try:
+        with open(path, "rb") as image_file:
+            encoded_string = base64.b64encode(image_file.read()).decode()
+        return f"data:image/png;base64,{encoded_string}"
+    except Exception:
+        return None
+
 # --- HOOFD LAYOUT ---
 
 logo_path = "Kepa_logo.png"
@@ -306,7 +316,7 @@ if st.session_state.get('gpkg_path') and os.path.exists(st.session_state['gpkg_p
                 use_container_width=True
             )
             
-    # NIEUWE KNOP: EXCEL
+    # KNOP: EXCEL
     if st.session_state.get('excel_path') and os.path.exists(st.session_state['excel_path']):
         with open(st.session_state['excel_path'], "rb") as f:
             st.sidebar.download_button(
@@ -317,37 +327,20 @@ if st.session_state.get('gpkg_path') and os.path.exists(st.session_state['gpkg_p
                 use_container_width=True
             )
 
-# --- HOOFDSCHERM KAART ---
-gpkg_to_show = st.session_state.get('gpkg_path') if st.session_state.get('gpkg_path') and os.path.exists(st.session_state['gpkg_path']) else None
-center_to_show = st.session_state.get('map_center')
-
-with st.container(border=True):
-    map_obj = generate_map(gpkg_path=gpkg_to_show, center_override=center_to_show)
-    st_folium(map_obj, height=750, use_container_width=True)
-
-# --- FOOTER / TRADEMARK (ONDER IN SIDEBAR) ---
+# --- FOOTER / TRADEMARK / LINKEDIN (NIEUW) ---
 st.sidebar.markdown("---")
 
-def get_image_base64(path):
-    """Zet afbeelding om naar base64 string voor HTML embedding"""
-    try:
-        with open(path, "rb") as image_file:
-            encoded_string = base64.b64encode(image_file.read()).decode()
-        return f"data:image/png;base64,{encoded_string}"
-    except Exception:
-        return None
-
 # Instellingen voor footer
-linkedin_img_path = "linkedin logo.png"  # De naam van je geüploade bestand
+linkedin_img_filename = "linkedin_logo.png"  # ZORG DAT DIT BESTAND IN JE MAP STAAT
 linkedin_link = "https://www.linkedin.com/in/rensfontein/"
-img_src = get_image_base64(linkedin_img_path)
+img_src = get_image_base64(linkedin_img_filename)
 
-# Fallback url als lokaal bestand niet gevonden wordt
+# Fallback url als lokaal bestand niet gevonden wordt (zodat de app niet crasht)
 if not img_src:
     img_src = "https://cdn-icons-png.flaticon.com/512/174/174857.png"
 
 footer_html = f"""
-<div style="text-align: center; margin-top: 20px; color: #6c757d; font-size: 0.9rem;">
+<div style="text-align: center; margin-top: 20px; margin-bottom: 20px; color: #6c757d; font-size: 0.85rem;">
     <p style="margin-bottom: 10px;">
         Deze tool is ontwikkeld en<br>
         eigendom van <strong>Rens Fontein</strong>
@@ -357,9 +350,13 @@ footer_html = f"""
     </a>
 </div>
 """
-
 st.sidebar.markdown(footer_html, unsafe_allow_html=True)
 
 
+# --- HOOFDSCHERM KAART ---
+gpkg_to_show = st.session_state.get('gpkg_path') if st.session_state.get('gpkg_path') and os.path.exists(st.session_state['gpkg_path']) else None
+center_to_show = st.session_state.get('map_center')
 
-
+with st.container(border=True):
+    map_obj = generate_map(gpkg_path=gpkg_to_show, center_override=center_to_show)
+    st_folium(map_obj, height=750, use_container_width=True)
