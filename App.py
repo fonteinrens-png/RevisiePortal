@@ -11,6 +11,7 @@ from pyproj import Transformer
 from backend_logic import process_dxf 
 from PIL import Image
 from datetime import date
+import base64
 
 # --- 1. CONFIGURATIE (MOET ALS EERSTE) ---
 st.set_page_config(
@@ -323,6 +324,42 @@ center_to_show = st.session_state.get('map_center')
 with st.container(border=True):
     map_obj = generate_map(gpkg_path=gpkg_to_show, center_override=center_to_show)
     st_folium(map_obj, height=750, use_container_width=True)
+
+# --- FOOTER / TRADEMARK (ONDER IN SIDEBAR) ---
+st.sidebar.markdown("---")
+
+def get_image_base64(path):
+    """Zet afbeelding om naar base64 string voor HTML embedding"""
+    try:
+        with open(path, "rb") as image_file:
+            encoded_string = base64.b64encode(image_file.read()).decode()
+        return f"data:image/png;base64,{encoded_string}"
+    except Exception:
+        return None
+
+# Instellingen voor footer
+linkedin_img_path = "linkedin logo.png"  # De naam van je geüploade bestand
+linkedin_link = "https://www.linkedin.com/in/rensfontein/"
+img_src = get_image_base64(linkedin_img_path)
+
+# Fallback url als lokaal bestand niet gevonden wordt
+if not img_src:
+    img_src = "https://cdn-icons-png.flaticon.com/512/174/174857.png"
+
+footer_html = f"""
+<div style="text-align: center; margin-top: 20px; color: #6c757d; font-size: 0.9rem;">
+    <p style="margin-bottom: 10px;">
+        Deze tool is ontwikkeld en<br>
+        eigendom van <strong>Rens Fontein</strong>
+    </p>
+    <a href="{linkedin_link}" target="_blank">
+        <img src="{img_src}" width="40" style="opacity: 0.8; transition: opacity 0.3s;" onmouseover="this.style.opacity=1" onmouseout="this.style.opacity=0.8">
+    </a>
+</div>
+"""
+
+st.sidebar.markdown(footer_html, unsafe_allow_html=True)
+
 
 
 
