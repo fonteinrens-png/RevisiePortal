@@ -342,8 +342,8 @@ if not img_src:
 footer_html = f"""
 <div style="text-align: center; margin-top: 20px; margin-bottom: 20px; color: #6c757d; font-size: 0.85rem;">
     <p style="margin-bottom: 10px;">
-        Deze tool is ontwikkeld en<br>
-        eigendom van <strong>Rens Fontein</strong>
+        Deze tool is ontwikkeld door
+        <strong>Rens Fontein</strong>
     </p>
     <a href="{linkedin_link}" target="_blank">
         <img src="{img_src}" width="40" style="opacity: 0.8; transition: opacity 0.3s;" onmouseover="this.style.opacity=1" onmouseout="this.style.opacity=0.8">
@@ -360,5 +360,6 @@ center_to_show = st.session_state.get('map_center')
 with st.container(border=True):
     map_obj = generate_map(gpkg_path=gpkg_to_show, center_override=center_to_show)
     st_folium(map_obj, height=750, use_container_width=True)
+
 
 
