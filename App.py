@@ -7,12 +7,12 @@ import folium
 from streamlit_folium import st_folium
 import fiona
 import ezdxf
+import math
 from pyproj import Transformer
-# Zorg dat backend_logic.py ook in je map staat
 from backend_logic import process_dxf 
 from PIL import Image
 from datetime import date
-import base64  # <--- TOEGEVOEGD: Nodig voor het logo in de sidebar
+import base64
 
 # --- 1. CONFIGURATIE (MOET ALS EERSTE) ---
 st.set_page_config(
@@ -110,7 +110,8 @@ def get_dxf_center_wgs84(dxf_path):
 def generate_map(gpkg_path=None, center_override=None):
     start_loc = [52.1, 5.1] 
     start_zoom = 8
-    if center_override:
+    
+    if center_override and not any(math.isnan(c) or math.isinf(c) for c in center_override):
         start_loc = center_override
         start_zoom = 18 
     elif gpkg_path:
@@ -118,15 +119,20 @@ def generate_map(gpkg_path=None, center_override=None):
             layers = fiona.listlayers(gpkg_path)
             if layers:
                 for layer in layers:
-                    gdf_bounds = gpd.read_file(gpkg_path, layer=layer)
-                    if not gdf_bounds.empty:
-                        if gdf_bounds.crs is None: gdf_bounds.set_crs("EPSG:28992", inplace=True)
-                        gdf_bounds = gdf_bounds.to_crs("EPSG:4326")
-                        centroid = gdf_bounds.geometry.unary_union.centroid
-                        start_loc = [centroid.y, centroid.x]
-                        start_zoom = 18
-                        break 
-        except: pass 
+                    if layer.lower() in ["constructielaag", "metadata"]: continue 
+                    try:
+                        gdf_bounds = gpd.read_file(gpkg_path, layer=layer)
+                        if not isinstance(gdf_bounds, gpd.GeoDataFrame): continue
+                        gdf_bounds = gdf_bounds.dropna(subset=['geometry'])
+                        if not gdf_bounds.empty:
+                            if gdf_bounds.crs is None: gdf_bounds.set_crs("EPSG:28992", inplace=True)
+                            gdf_bounds = gdf_bounds.to_crs("EPSG:4326")
+                            centroid = gdf_bounds.geometry.unary_union.centroid
+                            start_loc = [centroid.y, centroid.x]
+                            start_zoom = 18
+                            break 
+                    except Exception: pass
+        except Exception: pass 
 
     m = folium.Map(location=start_loc, zoom_start=start_zoom, tiles="OpenStreetMap")
 
@@ -138,18 +144,45 @@ def generate_map(gpkg_path=None, center_override=None):
                 "#2c3e50", "#d35400", "#7f8c8d"
             ]
             for i, layer_name in enumerate(layers):
+                if layer_name.lower() in ["constructielaag", "metadata"]: continue
+                
                 try:
                     gdf = gpd.read_file(gpkg_path, layer=layer_name)
+                    if not isinstance(gdf, gpd.GeoDataFrame): continue
+
+                    gdf = gdf.dropna(subset=['geometry'])
                     if gdf.empty: continue
+
                     if gdf.crs is None: gdf.set_crs("EPSG:28992", inplace=True)
+
+                    # Explode multipart geometries for display (keeps gpkg intact)
+                    try:
+                        geom_types = gdf.geometry.geom_type.unique()
+                        if any(gt in ("MultiPolygon", "MultiPoint") for gt in geom_types):
+                            try:
+                                gdf = gdf.explode(index_parts=False).reset_index(drop=True)
+                            except TypeError:
+                                gdf = gdf.explode().reset_index(drop=True)
+                    except Exception:
+                        pass
+
                     gdf["Laagnaam"] = layer_name
+                    
                     if gdf.geom_type.iloc[0] in ['Polygon', 'MultiPolygon']:
                         gdf["Oppervlakte"] = gdf.geometry.area.round(1).astype(str) + " m²"
                     else:
                         gdf["Oppervlakte"] = "-" 
+                        
                     gdf_display = gdf.to_crs("EPSG:4326")
+                    
+                    # FIX VOOR KAART CRASH: Zet alles om naar veilige text voor web-weergave
+                    for col in gdf_display.columns:
+                        if col != "geometry":
+                            gdf_display[col] = gdf_display[col].fillna("-").astype(str)
+
                     popup_fields = ["Laagnaam", "Oppervlakte"]
                     popup_aliases = ["Type:", "Oppervlakte:"]
+                    
                     for col in gdf_display.columns:
                         if any(x in col.lower() for x in ['materiaal', 'fysiek_voorkomen', 'type']) and col != "Laagnaam":
                             popup_fields.append(col)
@@ -160,9 +193,10 @@ def generate_map(gpkg_path=None, center_override=None):
                             popup_fields.append(col)
                             popup_aliases.append("ID:")
                             break
+                            
                     layer_color = hex_colors[i % len(hex_colors)]
                     folium.GeoJson(
-                        gdf_display,
+                        gdf_display.__geo_interface__,
                         name=layer_name,
                         style_function=lambda x, c=layer_color: {"fillColor": c, "color": "white", "weight": 1.5, "fillOpacity": 0.7},
                         marker=folium.CircleMarker(radius=6, fill_color=layer_color, color="white", weight=2, fill_opacity=1),
@@ -176,7 +210,6 @@ def generate_map(gpkg_path=None, center_override=None):
     return m
 
 def get_image_base64(path):
-    """Zet afbeelding om naar base64 string voor HTML embedding in sidebar"""
     try:
         with open(path, "rb") as image_file:
             encoded_string = base64.b64encode(image_file.read()).decode()
@@ -186,7 +219,7 @@ def get_image_base64(path):
 
 # --- HOOFD LAYOUT ---
 
-logo_path = "Kepa_logo.png"
+logo_path = "kepa_logo.png"
 if os.path.exists(logo_path):
     st.sidebar.image(logo_path, width=220)
 else:
@@ -203,25 +236,17 @@ uploaded_file = st.sidebar.file_uploader("Upload DXF bestand", type=["dxf"])
 
 # 2. METADATA INPUT
 form_compleet = False
-in_beheerder = ""
-in_beheerder_detail = ""
 in_opleverdatum = date.today()
 
 if uploaded_file:
-    st.sidebar.subheader(" Projectgegevens")
-    beheerders = [""] + ["Gemeente", "Provincie", "Rijkswaterstaat", "Waterschap", "Prorail", "Particulier", "Onbekend", "Overig"]
-    beheerders_detail = [""] + ["Amsterdamse Bos", "Havenschap", "Stadsdeel Centrum", "Stadsdeel Nieuw-West", "Stadsdeel Noord", "Stadsdeel Oost", "Stadsdeel West", "Stadsdeel Zuid", "Stadsdeel Zuidoost", "Westpoort", "Weesp", "VVE", "Overig"]
-    
-    in_beheerder = st.sidebar.selectbox("Beheerder *", beheerders, format_func=lambda x: "Maak een keuze..." if x == "" else x)
-    in_beheerder_detail = st.sidebar.selectbox("Beheerder (Detail) *", beheerders_detail, format_func=lambda x: "Maak een keuze..." if x == "" else x)
+    st.sidebar.subheader("📋 Projectgegevens")
     in_opleverdatum = st.sidebar.date_input("Opleverdatum *", value=date.today())
     
-    if in_beheerder != "" and in_beheerder_detail != "":
+    if in_opleverdatum:
         form_compleet = True
         garantie_datum = in_opleverdatum.replace(month=in_opleverdatum.month+6) if in_opleverdatum.month <= 6 else in_opleverdatum.replace(year=in_opleverdatum.year+1, month=in_opleverdatum.month-6)
         st.sidebar.info(f"Garantie t/m: {garantie_datum}")
-    else:
-        st.sidebar.warning("⚠️ Vul de verplichte velden in om te starten.")
+        st.sidebar.info(f"Aanleg & Onderhoud jaar: {in_opleverdatum.year}")
 
 if 'map_center' not in st.session_state: st.session_state['map_center'] = None
 
@@ -229,7 +254,7 @@ if uploaded_file:
     if 'last_uploaded' not in st.session_state or st.session_state['last_uploaded'] != uploaded_file.name:
         st.session_state['gpkg_path'] = None
         st.session_state['dxf_path'] = None
-        st.session_state['excel_path'] = None # Reset Excel path
+        st.session_state['excel_path'] = None 
         
         with tempfile.NamedTemporaryFile(delete=False, suffix=".dxf") as tmp:
             tmp.write(uploaded_file.getbuffer())
@@ -251,7 +276,7 @@ if uploaded_file:
         with open(input_path, "wb") as f:
             f.write(uploaded_file.getbuffer())
             
-        TEMPLATE_SOURCE = "OTL-Verhardingen_Beheer_2.4.1.gpkg"
+        TEMPLATE_SOURCE = "OTL_Verhardingen_v2_6_2.gpkg"
         if not os.path.exists(TEMPLATE_SOURCE):
             st.sidebar.error("⚠️ Template GPKG mist op server!")
             st.stop()
@@ -262,8 +287,6 @@ if uploaded_file:
             output_dxf_path = os.path.join(work_dir, output_dxf_name)
             
             user_meta = {
-                "beheerder": in_beheerder,
-                "beheerder_detail": in_beheerder_detail,
                 "opleverdatum": in_opleverdatum
             }
             try:
@@ -289,7 +312,7 @@ if uploaded_file:
                 st.session_state['gpkg_path'] = os.path.join(work_dir, f)
             if f.endswith("_verwerkt.dxf"):
                 st.session_state['dxf_path'] = os.path.join(work_dir, f)
-            if f.endswith(".xlsx"): # Excel zoeken
+            if f.endswith(".xlsx"): 
                 st.session_state['excel_path'] = os.path.join(work_dir, f)
 
 if st.session_state.get('gpkg_path') and os.path.exists(st.session_state['gpkg_path']):
@@ -316,7 +339,6 @@ if st.session_state.get('gpkg_path') and os.path.exists(st.session_state['gpkg_p
                 use_container_width=True
             )
             
-    # KNOP: EXCEL
     if st.session_state.get('excel_path') and os.path.exists(st.session_state['excel_path']):
         with open(st.session_state['excel_path'], "rb") as f:
             st.sidebar.download_button(
@@ -327,23 +349,17 @@ if st.session_state.get('gpkg_path') and os.path.exists(st.session_state['gpkg_p
                 use_container_width=True
             )
 
-# --- FOOTER / TRADEMARK / LINKEDIN (NIEUW) ---
+# --- FOOTER ---
 st.sidebar.markdown("---")
-
-# Instellingen voor footer
-linkedin_img_filename = "linkedin_logo.png"  # ZORG DAT DIT BESTAND IN JE MAP STAAT
+linkedin_img_filename = "linkedin_logo.png"
 linkedin_link = "https://www.linkedin.com/in/rensfontein/"
 img_src = get_image_base64(linkedin_img_filename)
-
-# Fallback url als lokaal bestand niet gevonden wordt (zodat de app niet crasht)
-if not img_src:
-    img_src = "https://cdn-icons-png.flaticon.com/512/174/174857.png"
+if not img_src: img_src = "https://cdn-icons-png.flaticon.com/512/174/174857.png"
 
 footer_html = f"""
 <div style="text-align: center; margin-top: 20px; margin-bottom: 20px; color: #6c757d; font-size: 0.85rem;">
     <p style="margin-bottom: 10px;">
-        Deze tool is ontwikkeld door
-        <strong>Rens Fontein</strong>
+        Deze tool is ontwikkeld door <strong>Rens Fontein</strong>
     </p>
     <a href="{linkedin_link}" target="_blank">
         <img src="{img_src}" width="40" style="opacity: 0.8; transition: opacity 0.3s;" onmouseover="this.style.opacity=1" onmouseout="this.style.opacity=0.8">
@@ -352,7 +368,6 @@ footer_html = f"""
 """
 st.sidebar.markdown(footer_html, unsafe_allow_html=True)
 
-
 # --- HOOFDSCHERM KAART ---
 gpkg_to_show = st.session_state.get('gpkg_path') if st.session_state.get('gpkg_path') and os.path.exists(st.session_state['gpkg_path']) else None
 center_to_show = st.session_state.get('map_center')
@@ -360,6 +375,3 @@ center_to_show = st.session_state.get('map_center')
 with st.container(border=True):
     map_obj = generate_map(gpkg_path=gpkg_to_show, center_override=center_to_show)
     st_folium(map_obj, height=750, use_container_width=True)
-
-
-
