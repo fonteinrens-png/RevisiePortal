@@ -6,11 +6,12 @@ import copy
 from datetime import datetime, date
 import shutil
 import os
+import re
 
 # CAD libraries
 import ezdxf
 import numpy as np
-from shapely.geometry import Polygon, LineString, Point as ShapelyPoint
+from shapely.geometry import Polygon, LineString, Point as ShapelyPoint, MultiPolygon, MultiPoint
 from shapely.ops import unary_union, polygonize
 
 # GIS & Data libraries
@@ -23,7 +24,7 @@ except ImportError:
     gpd = None
 
 # ==============================================================================
-# CONFIGURATIE
+# CONFIGURATIE & OTL MAPPING LOGICA
 # ==============================================================================
 OTL_LAYER_MAPPING = {
     "BSS": "Betonsteen",
@@ -55,13 +56,12 @@ POINT_LAYER_MAPPING = {
 
 SYSTEM_MAPPING = {
     "identificatie": "Identificatie",       
-    "imgeo_id": "IMGeo_identificatie",      
+    "imgeo_id": "IMGeo-identificatie", 
     "jaar_aanleg": "Jaar van aanleg",
+    "jaar_uitgevoerd_onderhoud": "Jaar uitgevoerd onderhoud",  
     "opleverdatum": "Opleverdatum",  
     "begin_garantie": "Begin garantieperiode",
     "einde_garantie": "Einde garantieperiode",
-    "beheerder": "Beheerder",
-    "beheerder_detail": "Beheerder gedetailleerd",
     "bronhouder": "Bronhouder",              
     "materiaal": "Materiaal",
     "kleur": "Kleur",
@@ -87,6 +87,69 @@ VALUE_MAPPING = {
     "G": "Grijs",
     "ZW": "Zwart",
     "KF": "Keiformaat",
+}
+
+# --- NIEUWE LOGICA VOOR CONSTRUCTIELAGEN ---
+MATERIAL_CATEGORIES = {
+    "Asfaltbeton": "ASFALT",
+    "Steenmastiekasfalt": "ASFALT",
+    "Printasfalt": "ASFALT",
+    "Asfaltbeton dunne laag": "ASFALT",
+    "Gebakken steen": "ELEMENTEN",
+    "Betonsteen": "ELEMENTEN",
+    "Natuursteenkei": "ELEMENTEN",
+    "Kei": "ELEMENTEN",
+    "Basaltblokken": "ELEMENTEN",
+    "Betontegel": "TEGELS",
+    "Natuursteentegel": "TEGELS",
+    "Grindtegel": "TEGELS",
+    "Rubbertegel": "TEGELS",
+    "Grind": "HALFVERHARDING",
+    "Gravel": "HALFVERHARDING",
+    "Schelpen": "HALFVERHARDING",
+    "Puin": "HALFVERHARDING",
+    "Gralux": "HALFVERHARDING",
+    "Houtsnippers": "HALFVERHARDING",
+    "Boomschors": "HALFVERHARDING",
+    "Betonplaat": "BETON",
+    "Gewapend beton": "BETON",
+    "Verdeuveld": "BETON",
+    "Onverdeuveld": "BETON"
+}
+
+# Opbouw per categorie
+LAYER_BUILDUP_RULES = {
+    "ASFALT": [
+        (1, "DEKLAAG", 40, "Asfalt deklaag"),
+        (2, "TUSSENLAAG", 60, "AC binder"),
+        (3, "ONDERLAAG", 100, "AC base"),
+        (4, "FUNDERING", 250, "Menggranulaat"),
+        (5, "ZANDBED", 200, "Zand")
+    ],
+    "ELEMENTEN": [
+        (1, "ELEMENTENLAAG", 80, "Bestrating"),
+        (2, "LEGBED", 40, "Straatzand"),
+        (3, "FUNDERING", 250, "Menggranulaat"),
+        (4, "ZANDBED", 200, "Zand")
+    ],
+    "TEGELS": [
+        (1, "ELEMENTENLAAG", 50, "Tegels"),
+        (2, "LEGBED", 40, "Straatzand"),
+        (3, "ZANDBED", 200, "Zand")
+    ],
+    "HALFVERHARDING": [
+        (1, "DEKLAAG", 100, "Halfverharding"),
+        (2, "ZANDBED", 200, "Zand")
+    ],
+    "BETON": [
+        (1, "DEKLAAG", 200, "Beton"),
+        (2, "FUNDERING", 200, "Menggranulaat"),
+        (3, "ZANDBED", 200, "Zand")
+    ],
+    "DEFAULT": [
+        (1, "DEKLAAG", 50, "Onbekend"),
+        (2, "ZANDBED", 200, "Zand")
+    ]
 }
 
 # ==============================================================================
@@ -271,7 +334,7 @@ def read_lines_and_blocks(doc):
                 "name": block_name, 
                 "location": shapely_location, 
                 "color": block_color, 
-                "layer": insert.dxf.layer, # Toegevoegd voor filtering later!
+                "layer": insert.dxf.layer, 
                 "insert": insert, 
                 "attributes": attributes
             }
@@ -331,6 +394,18 @@ def prepare_full_gpkg_copy(input_dxf_path, template_path):
     except Exception as e:
         print(f"FOUT bij kopiëren template: {e}")
         return None
+    # Verwijder eventuele administratieve 'Metadata' laag uit de kopie
+    try:
+        existing = fiona.listlayers(str(gpkg_path))
+        for lyr in existing:
+            if lyr.lower() == 'metadata':
+                try:
+                    fiona.remove(str(gpkg_path), layer=lyr)
+                    print(f"Verwijderd administratieve laag uit export: {lyr}")
+                except Exception as e:
+                    print(f"Kon laag '{lyr}' niet verwijderen uit kopie: {e}")
+    except Exception:
+        pass
     return str(gpkg_path)
 
 def clean_up_gpkg(gpkg_path):
@@ -339,6 +414,8 @@ def clean_up_gpkg(gpkg_path):
     try:
         all_layers = fiona.listlayers(gpkg_path)
         for layer_name in all_layers:
+            # Sla de administratieve tabellen over met schoonmaken!
+            if layer_name.lower() in ["constructielaag", "metadata"]: continue
             try:
                 with fiona.open(gpkg_path, layer=layer_name) as src:
                     if len(src) == 0:
@@ -347,6 +424,7 @@ def clean_up_gpkg(gpkg_path):
     except Exception as e:
         print(f"Fout bij scannen lagen: {e}")
         return
+        
     if layers_to_remove:
         print(f"--- Opschonen: {len(layers_to_remove)} lege lagen verwijderen ---")
         for layer in layers_to_remove:
@@ -365,34 +443,115 @@ def get_mapped_attributes(cad_attributes):
     return mapped
 
 def write_to_layer(gpkg_path, layer_name, records):
+    """
+    Robsuste schrijffunctie die Schema's uitlijnt met de template
+    zodat GeoPandas niet per ongeluk kolommen op de verkeerde plek wegschrijft.
+    """
     if not records: return
     print(f" -> Verwerken laag: {layer_name} ({len(records)} objecten)...")
-    gdf = gpd.GeoDataFrame(records, crs="EPSG:28992")
+    
+    has_geom = any(r.get('geometry') is not None for r in records)
+    
+    if has_geom:
+        from shapely.geometry import shape
+        normalized = []
+        for r in records:
+            geom = r.get('geometry')
+            if geom is None:
+                normalized.append(r)
+                continue
+            # If geometry is a geo-interface (dict), convert to shapely
+            try:
+                if not hasattr(geom, 'geom_type'):
+                    geom = shape(geom)
+            except Exception:
+                pass
+
+            gtype = getattr(geom, 'geom_type', '').lower()
+            if gtype == 'polygon':
+                try:
+                    geom = MultiPolygon([geom])
+                except Exception:
+                    pass
+            elif gtype == 'point':
+                try:
+                    geom = MultiPoint([geom])
+                except Exception:
+                    pass
+
+            r['geometry'] = geom
+            normalized.append(r)
+
+        gdf = gpd.GeoDataFrame(normalized, crs="EPSG:28992")
+    else:
+        # Als we geen geometry hebben (bijv Constructielaag)
+        gdf = pd.DataFrame(records)
+        gdf['geometry'] = None
+        gdf = gpd.GeoDataFrame(gdf, geometry='geometry', crs="EPSG:28992")
+
+    # Opschonen van haakjes in ALLE string velden
+    for col in gdf.columns:
+        if col != 'geometry' and gdf[col].dtype == object:
+            gdf[col] = gdf[col].apply(lambda x: re.sub(r'\s*\([^)]*\)', '', str(x)).strip() if isinstance(x, str) and pd.notnull(x) else x)
+
+    # SCHEMA UITLIJNING: Fix de "2026 in Bijzondere constructie" warning.
     try:
-        with fiona.open(gpkg_path, mode='a', layer=layer_name) as dst:
-            schema_cols = list(dst.schema['properties'].keys())
-            schema_map = {col.lower(): col for col in schema_cols}
-            fiona_records = []
-            for i, row in gdf.iterrows():
-                geom = row['geometry'].__geo_interface__
-                props = {}
-                for script_col, value in row.items():
-                    if script_col == 'geometry': continue
-                    target_col = schema_map.get(script_col.lower())
-                    if target_col:
-                        props[target_col] = None if pd.isna(value) else value
-                for real_col in schema_cols:
-                    if real_col not in props:
-                        props[real_col] = None
-                fiona_records.append({'geometry': geom, 'properties': props})
-            dst.writerecords(fiona_records)
-            print(f"    Succes!")
+        with fiona.open(gpkg_path, layer=layer_name) as target_info:
+            target_cols = list(target_info.schema['properties'].keys())
+        
+        # 1. Voeg ontbrekende target kolommen leeg toe aan GDF
+        for c in target_cols:
+            if c not in gdf.columns:
+                gdf[c] = None
+        
+        # 2. Pak exact de kolommen uit de target en in die exacte volgorde
+        cols_to_keep = [c for c in target_cols if c in gdf.columns]
+        if 'geometry' in gdf.columns:
+            cols_to_keep.append('geometry')
+            
+        gdf = gdf[cols_to_keep]
     except Exception as e:
-        print(f"    FOUT bij schrijven naar {layer_name}: {e}")
+        print(f"    Schema alignment waarschuwing: {e}")
+
+    # Exporteer
+    try:
+        gdf.to_file(gpkg_path, layer=layer_name, driver="GPKG", mode="a")
+        print(f"    Succes via GeoPandas!")
+    except Exception as e:
+        print(f"    GeoPandas opslag faalde ({e}). Fallback naar Fiona wordt gestart...")
+        try:
+            with fiona.open(gpkg_path, mode='a', layer=layer_name) as dst:
+                schema_cols = list(dst.schema['properties'].keys())
+                schema_map = {col.lower(): col for col in schema_cols}
+                fiona_records = []
+                
+                for i, row in gdf.iterrows():
+                    geom_val = None
+                    if has_geom and pd.notnull(row.get('geometry')):
+                        geom_val = row['geometry'].__geo_interface__
+                    
+                    props = {}
+                    for script_col, value in row.items():
+                        if script_col == 'geometry': continue
+                        target_col = schema_map.get(script_col.lower())
+                        if target_col:
+                            props[target_col] = None if pd.isna(value) else value
+                            
+                    for real_col in schema_cols:
+                        if real_col not in props:
+                            props[real_col] = None
+                    
+                    fiona_records.append({'geometry': geom_val, 'properties': props})
+                
+                dst.writerecords(fiona_records)
+                print(f"    Succes via Fiona fallback!")
+        except Exception as e2:
+            print(f"    FOUT bij schrijven naar {layer_name} (Fiona faalde ook): {e2}")
 
 def export_svh_to_gis(svh_polygons, gpkg_path, project_config):
     if not svh_polygons or not gpkg_path: return
     layers_data = {}
+    constructielagen = [] 
     
     for item in svh_polygons:
         poly = item["polygon"]
@@ -406,16 +565,17 @@ def export_svh_to_gis(svh_polygons, gpkg_path, project_config):
                 target_layer = layer_name
                 break
         
+        poly_identificatie = str(uuid.uuid4())
+        
         internal_record = {
             "geometry": poly,
-            "identificatie": str(uuid.uuid4()), 
+            "identificatie": poly_identificatie, 
             "imgeo_id": str(uuid.uuid4()),      
             "jaar_aanleg": project_config.get("jaar_aanleg"),
+            "jaar_uitgevoerd_onderhoud": project_config.get("jaar_uitgevoerd_onderhoud"),
             "opleverdatum": project_config.get("opleverdatum"),
             "begin_garantie": project_config.get("begin_garantie"),
             "einde_garantie": project_config.get("einde_garantie"),
-            "beheerder": project_config.get("beheerder"),
-            "beheerder_detail": project_config.get("beheerder_detail"),
             "bronhouder": project_config.get("bronhouder"),
             "materiaal": item["material"] 
         }
@@ -431,9 +591,39 @@ def export_svh_to_gis(svh_polygons, gpkg_path, project_config):
         if target_layer not in layers_data: layers_data[target_layer] = []
         layers_data[target_layer].append(final_record)
 
+        # --- AANMAKEN CONSTRUCTIELAGEN O.B.V. TYPE ---
+        categorie = MATERIAL_CATEGORIES.get(target_layer, "DEFAULT")
+        opbouw_regels = LAYER_BUILDUP_RULES.get(categorie, LAYER_BUILDUP_RULES["DEFAULT"])
+        
+        for (laag_nr, soort, default_dikte, sub_materiaal) in opbouw_regels:
+            if laag_nr == 1:
+                dikte_str = attrs.get("DIKTE", str(default_dikte))
+                try: dikte = int(float(dikte_str))
+                except: dikte = default_dikte
+                mat_naam = mapped_attrs.get("Materiaal", item["material"])
+            else:
+                dikte = default_dikte
+                mat_naam = sub_materiaal
+                
+            constructielaag_record = {
+                "geometry": None, 
+                "Identificatie": str(uuid.uuid4()),
+                "ID-Verhardingsobject": poly_identificatie, 
+                "Constructielaagsoort": soort,
+                "Dikte constructielaag": dikte,
+                "Jaar van aanleg": project_config.get("jaar_aanleg"),
+                "Laagnummer": laag_nr,
+                "Materiaal": mat_naam
+            }
+            constructielagen.append(constructielaag_record)
+
     print("--- Start export VLAKKEN ---")
     for layer_name, records in layers_data.items():
         write_to_layer(gpkg_path, layer_name, records)
+
+    if constructielagen:
+        print("--- Start export CONSTRUCTIELAGEN ---")
+        write_to_layer(gpkg_path, "Constructielaag", constructielagen)
 
 def export_sri_to_gis(sri_blocks, gpkg_path, project_config):
     if not sri_blocks or not gpkg_path: return
@@ -455,11 +645,10 @@ def export_sri_to_gis(sri_blocks, gpkg_path, project_config):
             "geometry": point,
             "identificatie": str(uuid.uuid4()),
             "jaar_aanleg": project_config.get("jaar_aanleg"),
+            "jaar_uitgevoerd_onderhoud": project_config.get("jaar_uitgevoerd_onderhoud"),
             "opleverdatum": project_config.get("opleverdatum"),
             "begin_garantie": project_config.get("begin_garantie"),
             "einde_garantie": project_config.get("einde_garantie"),
-            "beheerder": project_config.get("beheerder"),
-            "beheerder_detail": project_config.get("beheerder_detail"),
             "bronhouder": project_config.get("bronhouder"),
         }
         mapped_attrs = get_mapped_attributes(attrs)
@@ -482,7 +671,6 @@ def export_sri_to_gis(sri_blocks, gpkg_path, project_config):
 # HOEVEELHEDEN EXPORT (EXCEL)
 # ==============================================================================
 def export_quantities_to_excel(output_dxf_path, project_config, svh_polygons, lines_with_props, blocks_data):
-    """Generates an Excel file with quantities based on processed data."""
     try:
         input_path = Path(output_dxf_path)
         stem = input_path.stem.replace("_verwerkt", "") 
@@ -492,19 +680,19 @@ def export_quantities_to_excel(output_dxf_path, project_config, svh_polygons, li
 
         data_rows = []
 
-        # 1. Header Info
         data_rows.append({"Categorie": "PROJECT INFORMATIE", "Omschrijving": "", "Hoeveelheid": "", "Eenheid": ""})
         data_rows.append({"Categorie": "", "Omschrijving": "Project", "Hoeveelheid": project_name, "Eenheid": ""})
-        data_rows.append({"Categorie": "", "Omschrijving": "Beheerder", "Hoeveelheid": project_config.get("beheerder", ""), "Eenheid": ""})
         data_rows.append({"Categorie": "", "Omschrijving": "Datum", "Hoeveelheid": datetime.now().strftime("%d-%m-%Y"), "Eenheid": ""})
         data_rows.append({"Categorie": "", "Omschrijving": "", "Hoeveelheid": "", "Eenheid": ""}) 
 
-        # 2. VLAKKEN (Oppervlaktes)
         data_rows.append({"Categorie": "VERHARDING (VLAKKEN)", "Omschrijving": "", "Hoeveelheid": "", "Eenheid": ""})
         
         area_stats = {}
         for poly_data in svh_polygons:
-            mat = poly_data["material"]
+            # RegEx filter toepassen in Excel output voor strakke presentatie
+            raw_mat = poly_data["material"]
+            mat = re.sub(r'\s*\([^)]*\)', '', raw_mat).strip()
+            
             area_stats[mat] = area_stats.get(mat, 0.0) + poly_data["area"]
         
         for mat, area in area_stats.items():
@@ -517,7 +705,6 @@ def export_quantities_to_excel(output_dxf_path, project_config, svh_polygons, li
 
         data_rows.append({"Categorie": "", "Omschrijving": "", "Hoeveelheid": "", "Eenheid": ""}) 
 
-        # 3. PUNTEN (Gefilterd!)
         data_rows.append({"Categorie": "INRICHTING (PUNTEN)", "Omschrijving": "", "Hoeveelheid": "", "Eenheid": ""})
         
         block_stats = {}
@@ -525,13 +712,12 @@ def export_quantities_to_excel(output_dxf_path, project_config, svh_polygons, li
             name = block["name"]
             layer = block.get("layer", "").upper()
             
-            # --- FILTER ---
-            # Sla over als naam begint met SVH (hatch)
             if name.startswith("SVH"): continue
-            # Sla over als laag begint met X (bestaand/vervallen)
             if layer.startswith("X"): continue
             
-            block_stats[name] = block_stats.get(name, 0) + 1
+            # RegEx filter toepassen voor Inrichting
+            clean_name = re.sub(r'\s*\([^)]*\)', '', name).strip()
+            block_stats[clean_name] = block_stats.get(clean_name, 0) + 1
             
         for name, count in block_stats.items():
             data_rows.append({
@@ -628,7 +814,7 @@ def export_dxf(doc, svh_polygons, non_svh_polygons, output_path, color_palette=N
 # ==============================================================================
 # MAIN
 # ==============================================================================
-def process_dxf(input_path, output_path=None, tolerance=0.5, template_path="OTL-Verhardingen_Beheer_2.4.1.gpkg", user_metadata=None):
+def process_dxf(input_path, output_path=None, tolerance=0.5, template_path="OTL_Verhardingen_v2_6_2.gpkg", user_metadata=None):
     input_path = Path(input_path)
     if output_path is None: output_path = input_path.with_name(input_path.stem + "_verwerkt.dxf")
     if not input_path.exists(): raise FileNotFoundError(f"Input niet gevonden: {input_path}")
@@ -636,13 +822,9 @@ def process_dxf(input_path, output_path=None, tolerance=0.5, template_path="OTL-
     oplever_str = datetime.now().strftime("%Y-%m-%d")
     begin_garantie_str = oplever_str
     einde_garantie_str = oplever_str
-    beheerder_val = "Gemeente Amsterdam"
-    beheerder_detail_val = "Onbekend"
     jaar_aanleg_val = str(datetime.now().year)
 
     if user_metadata:
-        if user_metadata.get('beheerder'): beheerder_val = user_metadata['beheerder']
-        if user_metadata.get('beheerder_detail'): beheerder_detail_val = user_metadata['beheerder_detail']
         if user_metadata.get('opleverdatum'):
             dt_oplever = pd.to_datetime(user_metadata['opleverdatum'])
             dt_einde = dt_oplever + pd.DateOffset(months=6)
@@ -653,9 +835,8 @@ def process_dxf(input_path, output_path=None, tolerance=0.5, template_path="OTL-
 
     project_config = {
         "bronhouder": "Gemeente Amsterdam",
-        "beheerder": beheerder_val,
-        "beheerder_detail": beheerder_detail_val,
         "jaar_aanleg": jaar_aanleg_val,
+        "jaar_uitgevoerd_onderhoud": jaar_aanleg_val,
         "opleverdatum": oplever_str,
         "begin_garantie": begin_garantie_str,
         "einde_garantie": einde_garantie_str
@@ -689,7 +870,7 @@ def main():
     parser.add_argument("input", help="Pad naar DXF")
     parser.add_argument("-o", "--output", help="Output pad", default=None)
     parser.add_argument("-t", "--tolerance", type=float, default=0.1) 
-    parser.add_argument("--template", help="Pad naar OTL GPKG", default="OTL-Verhardingen_Beheer_2.4.1.gpkg")
+    parser.add_argument("--template", help="Pad naar OTL GPKG", default="OTL_Verhardingen_v2_6_2.gpkg")
     args = parser.parse_args()
     process_dxf(args.input, args.output, args.tolerance, args.template)
 
